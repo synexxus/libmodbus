@@ -1997,13 +1997,23 @@ void modbus_process_data_master(modbus_t *ctx){
         ctx->async_data.in_async_operation = FALSE;
 
         /* Call the callback with an error_code of -1(timeout) */
-        ctx->async_data.callback( ctx, 
-                          ctx->async_data.function_code,
-                          ctx->async_data.addr, 
-                          0,
-                          ctx->async_data.data, 
-                          -1, 
-                          ctx->async_data.callback_data );
+        if( ctx->async_data.callback ){
+            ctx->async_data.callback( ctx, 
+                              ctx->async_data.function_code,
+                              ctx->async_data.addr, 
+                              0,
+                              ctx->async_data.data, 
+                              -1, 
+                              ctx->async_data.callback_data );
+        }else if( ctx->async_data.bit_callback ){
+            ctx->async_data.bit_callback( ctx,
+                              ctx->async_data.function_code,
+                              ctx->async_data.addr,
+                              0,
+                              (uint8_t*)ctx->async_data.data,
+                              -1,
+                              ctx->async_data.callback_data );
+        }
         
         return;
     }
