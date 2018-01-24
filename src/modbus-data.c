@@ -44,6 +44,10 @@
 #    undef bswap_32
 #    define bswap_32 __builtin_bswap32
 #  endif
+#  if GCC_VERSION >= 480
+#    undef bswap_16
+#    define bswap_16 __builtin_bswap16
+#  endif
 #endif
 
 #if defined(_MSC_VER) && (_MSC_VER >= 1400)
@@ -51,7 +55,7 @@
 #  define bswap_16 _byteswap_ushort
 #endif
 
-#if !defined(__CYGWIN__) && !defined(bswap_16)
+#if !defined(bswap_16)
 #  warning "Fallback on C functions for bswap_16"
 static inline uint16_t bswap_16(uint16_t x)
 {

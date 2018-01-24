@@ -72,7 +72,9 @@ MODBUS_BEGIN_DECLS
 #define MODBUS_FC_MASK_WRITE_REGISTER       0x16
 #define MODBUS_FC_WRITE_AND_READ_REGISTERS  0x17
 
-#define MODBUS_BROADCAST_ADDRESS    0
+#define MODBUS_SLAVE_ACCEPT_ALL  -2
+#define MODBUS_SLAVE_INIT        -1
+#define MODBUS_BROADCAST_ADDRESS  0
 
 /* Modbus_Application_Protocol_V1_1b.pdf (chapter 6 section 1 page 12)
  * Quantity of Coils to read (2 bytes): 1 to 2000 (0x7D0)
@@ -177,6 +179,13 @@ typedef enum
     MODBUS_ERROR_RECOVERY_PROTOCOL      = (1<<2)
 } modbus_error_recovery_mode;
 
+typedef struct {
+    int (*accept_rtu_slave)(void *user_ctx, int slave);
+    int (*verify)(void *user_ctx, int slave, int function, uint16_t address, int nb);
+    int (*read)(void *user_ctx, int slave, int function, uint16_t address, int nb, uint8_t bytes[], int len);
+    int (*write)(void *user_ctx, int slave, int function, uint16_t address, int nb, const uint8_t bytes[]);
+} modbus_reply_callbacks_t;
+
 MODBUS_API int modbus_set_slave(modbus_t* ctx, int slave);
 MODBUS_API int modbus_get_slave(modbus_t* ctx);
 MODBUS_API int modbus_set_error_recovery(modbus_t *ctx, modbus_error_recovery_mode error_recovery);
@@ -188,6 +197,9 @@ MODBUS_API int modbus_set_response_timeout(modbus_t *ctx, uint32_t to_sec, uint3
 
 MODBUS_API int modbus_get_byte_timeout(modbus_t *ctx, uint32_t *to_sec, uint32_t *to_usec);
 MODBUS_API int modbus_set_byte_timeout(modbus_t *ctx, uint32_t to_sec, uint32_t to_usec);
+
+MODBUS_API int modbus_get_indication_timeout(modbus_t *ctx, uint32_t *to_sec, uint32_t *to_usec);
+MODBUS_API int modbus_set_indication_timeout(modbus_t *ctx, uint32_t to_sec, uint32_t to_usec);
 
 MODBUS_API int modbus_get_header_length(modbus_t *ctx);
 
@@ -235,6 +247,11 @@ MODBUS_API int modbus_reply(modbus_t *ctx, const uint8_t *req,
                             int req_length, modbus_mapping_t *mb_mapping);
 MODBUS_API int modbus_reply_exception(modbus_t *ctx, const uint8_t *req,
                                       unsigned int exception_code);
+MODBUS_API int modbus_set_reply_callbacks(modbus_t *ctx,
+                                          const modbus_reply_callbacks_t *cb,
+                                          void *user_ctx);
+MODBUS_API int modbus_reply_callback(modbus_t *ctx, const uint8_t *req,
+                                     int req_length);
 
 /**
  * Asynchronous API
