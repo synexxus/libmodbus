@@ -40,11 +40,6 @@ static int response_io_status(uint8_t *tab_io_status,
     return offset;
 }
 
-static int mb_mapping_accept_rtu_slave(void *user_ctx, int slave)
-{
-    return TRUE;
-}
-
 static int mb_mapping_verify(void *user_ctx, int slave, int function, uint16_t address, int nb)
 {
     modbus_mapping_t *mb_mapping = user_ctx;
@@ -157,7 +152,6 @@ static int mb_mapping_write(void *user_ctx, int slave, int function, uint16_t ad
 }
 
 static const modbus_reply_callbacks_t mb_mapping_callbacks = {
-    mb_mapping_accept_rtu_slave,
     mb_mapping_verify,
     mb_mapping_read,
     mb_mapping_write,

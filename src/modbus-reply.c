@@ -77,17 +77,9 @@ int modbus_set_reply_callbacks(modbus_t *ctx, const modbus_reply_callbacks_t *cb
          cb->read == NULL ||
          cb->write == NULL)) {
 
-	LOG_DEBUG( "modbus", 
+	LOG_ERROR( "modbus",
             "callback-structure is not correctly populated");
 
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (ctx->backend->backend_type == _MODBUS_BACKEND_TYPE_RTU &&
-        cb->accept_rtu_slave == NULL) {
-	LOG_DEBUG( "modbus", 
-            "callback-structure is not correctly populated - missing accept_rtu_slave");
         errno = EINVAL;
         return -1;
     }
@@ -126,17 +118,25 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
 
     /* special RTU-cases error checking */
     if (ctx->backend->backend_type == _MODBUS_BACKEND_TYPE_RTU) {
-        /* we accept BROADCAST_ADDRESSes */
-        if (slave != MODBUS_BROADCAST_ADDRESS) {
-            /* check whether this slave is handled by this instance and
-             * suppress any responses when the slave-id not accepted by the user */
-            if (ctx->reply_cb->accept_rtu_slave(ctx->reply_user_ctx, slave) == FALSE) {
-                char buffer[ 128 ];
-                snprintf( buffer, 128, 
-                      "slave ID %d is not handled by this instance", slave);
-	        LOG_DEBUG( "modbus", buffer );
-                return 0;
-            }
+        /* Only accept messages under the following circumstances:
+         * - The message is a broadcast address
+         * - The message is for us
+         * - Our address is MODBUS_SLAVE_ACCEPT_ALL
+         */
+        int our_address = modbus_get_slave( ctx );
+        int accept = FALSE;
+        if (slave == MODBUS_BROADCAST_ADDRESS ||
+            slave == our_address ||
+            our_address == MODBUS_SLAVE_ACCEPT_ALL ){
+            accept = TRUE;
+        }
+
+        if (!accept){
+            char buffer[ 128 ];
+            snprintf( buffer, 128, 
+                  "slave ID %d is not handled by this instance", slave);
+	    LOG_DEBUG( "modbus", buffer );
+            return 0;
         }
 
         // TODO broadcast responses should use the slave-id, probably
