@@ -324,6 +324,12 @@ MODBUS_API int modbus_read_input_bits_async(modbus_t *ctx, int addr, int nb,
 MODBUS_API int modbus_is_in_async_operation(modbus_t *ctx);
 
 /**
+ * Process modbus data, as a slave device.  This should be called whenever there is new data 
+ * that comes in on the line(serial/ethernet)
+ */
+MODBUS_API void modbus_process_data_slave(modbus_t *ctx);
+
+/**
  * UTILS FUNCTIONS
  **/
 

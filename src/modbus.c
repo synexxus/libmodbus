@@ -37,6 +37,12 @@ const unsigned int libmodbus_version_micro = LIBMODBUS_VERSION_MICRO;
 /* Define our log function pointer */
 simplelogger_log_function libsynmodbus_log_function = NULL;
 
+/* What kind of processing we are doing */
+enum ProcessingType{
+    PROCESSING_MASTER,
+    PROCESSING_SLAVE
+};
+
 const char *modbus_strerror(int errnum) {
     switch (errnum) {
     case EMBXILFUN:
@@ -1644,30 +1650,20 @@ static int read_io_async(modbus_t *ctx, int function, int addr, int nb,
     return rc;
 }
 
-void modbus_process_data_master(modbus_t *ctx){
-    int offset;
+/**
+ * Process the timeout condition for the master, and returns if we need to do more
+ * processing.
+ */
+static int modbus_process_master_needs_processing(modbus_t *ctx){
     int rc;
-    int i;
-    int error_code = 0;
-    /* Local variables to make this clearer */
-    int* data_offset;
-    uint8_t* buffer;
-    int* length_to_read;
-    _step_t* step;
-    uint16_t* dest;
-     
-    if (ctx == NULL) {
-        errno = EINVAL;
-        return;
-    }
 
     if( !ctx->async_data.in_async_operation ){
-        return;
+        return FALSE;
     }
 
     if( ctx->async_data.in_async_operation &&
         modbus_timer_has_expired( ctx ) ){
-        LOG_DEBUG( "modbus", "Timeout expired for operation" );
+        LOG_DEBUG( "modbus", "Timeout expired for read operation from slave" );
         /* Our timeout has expired;  purge everything
            in the OS buffer */
         uint8_t purge_buffer[ 128 ];
@@ -1696,7 +1692,117 @@ void modbus_process_data_master(modbus_t *ctx){
                               ctx->async_data.callback_data );
         }
         
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void modbus_process_master_confirmation(modbus_t *ctx, uint8_t* buffer, int* data_offset, uint16_t* dest ){
+    int rc;
+    int error_code = 0;
+    int offset;
+    int i;
+
+    rc = check_confirmation(ctx, ctx->async_data.request, buffer, *data_offset,
+                            &error_code );
+    if (rc == -1){
+        if( error_code != 0 ){
+            ctx->async_data.in_async_operation = 0;
+	    if( ctx->async_data.callback ){
+                ctx->async_data.callback( ctx,
+                                  ctx->async_data.function_code,
+                                  ctx->async_data.addr,
+                                  0,
+                                  ctx->async_data.data,
+                                  error_code,
+                                  ctx->async_data.callback_data );
+	    }else if( ctx->async_data.bit_callback ){
+                ctx->async_data.bit_callback( ctx,
+                                  ctx->async_data.function_code,
+                                  ctx->async_data.addr,
+                                  0,
+                                  (uint8_t*)ctx->async_data.data,
+                                  error_code,
+                                  ctx->async_data.callback_data );
+	    }
+        }
+        LOG_WARN( "modbus", "check_confirmation was invalid, but error code was 0" );
         return;
+    }
+
+    offset = ctx->backend->header_length;
+
+    ctx->async_data.in_async_operation = 0;
+    switch( ctx->async_data.function_code ){
+    case MODBUS_FC_READ_HOLDING_REGISTERS:
+    case MODBUS_FC_READ_INPUT_REGISTERS:
+        for (i = 0; i < rc; i++) {
+            /* shift reg hi_byte to temp OR with lo_byte */
+            dest[i] = (buffer[offset + 2 + (i << 1)] << 8) |
+                    buffer[offset + 3 + (i << 1)];
+        }
+        ctx->async_data.callback( ctx,
+                          ctx->async_data.function_code,
+                          ctx->async_data.addr,
+                          ctx->async_data.nb,
+                          ctx->async_data.data,
+                          error_code,
+                          ctx->async_data.callback_data );
+	break;
+    case MODBUS_FC_READ_COILS:
+    case MODBUS_FC_READ_DISCRETE_INPUTS:
+	{
+            uint8_t* data = (uint8_t*)ctx->async_data.data;
+	    int pos = 0;
+	    int temp, bit;
+	    int offset_end;
+
+            offset = ctx->backend->header_length + 2;
+            offset_end = offset + rc;
+	    /* libmodbus uses 1 byte per bit when reporting the
+	     * data back to the user
+	     */
+	    for (i = offset; i < offset_end; i++) {
+                temp = ctx->async_data.raw_data[i];
+
+                for (bit = 0x01; (bit & 0xff) && (pos < ctx->async_data.nb);) {
+                    data[pos++] = (temp & bit) ? TRUE : FALSE;
+                    bit = bit << 1;
+                }
+	    }
+
+            ctx->async_data.bit_callback( ctx,
+                          ctx->async_data.function_code,
+                          ctx->async_data.addr,
+                          ctx->async_data.nb,
+                          data,
+                          error_code,
+                          ctx->async_data.callback_data );
+	}
+	break;
+    }
+}
+
+static void modbus_process_data(modbus_t *ctx, enum ProcessingType type){
+    int rc;
+    int i;
+    /* Local variables to make this clearer */
+    int* data_offset;
+    uint8_t* buffer;
+    int* length_to_read;
+    _step_t* step;
+    uint16_t* dest;
+
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return;
+    }
+
+    if( type == PROCESSING_MASTER ){
+        if( !modbus_process_master_needs_processing(ctx) ){
+            return;
+        }
     }
 
     data_offset = &(ctx->async_data.raw_data_offset);
@@ -1706,16 +1812,36 @@ void modbus_process_data_master(modbus_t *ctx){
     dest = ctx->async_data.data;
 
     while( *step != _STEP_DONE ){ 
+        if( type == PROCESSING_SLAVE &&
+            *data_offset != 0 &&
+            modbus_timer_has_expired(ctx) ){
+            /* Before we read data, ensure that our timer from an old request hasn't
+             * expired.  If it has, reset our offset location.
+             */
+            *data_offset = 0;
+            LOG_DEBUG( "modbus", "Request from master timed out(incomplete message?)" );
+        }
+
+        if( *data_offset == 0 &&
+            type == PROCESSING_SLAVE ){
+            /* Set the time of the last to be now so we don't process a timeout */
+            gettimeofday( &ctx->async_data.start_time, NULL );
+            /* Also ensure that we will actually read some bytes.  We need to read
+             * at least the header information
+             */
+            *length_to_read = ctx->backend->header_length + 1;
+        }
+
         rc = ctx->backend->recv(ctx, buffer + *data_offset, *length_to_read );
         if (rc == -1){
             return;
         }else if( rc == 0 ){
-            LOG_TRACE( "modbus", "No data recieved from slave device!" );
-            /*printf( "no data, data offset is %d length to read is %d\n", 
-                ctx->async_data.raw_data_offset,
-                *length_to_read ); */
-            
+            LOG_TRACE( "modbus", "No data recieved from device!" );
             return;
+        }
+
+        if( type == PROCESSING_SLAVE ){
+            gettimeofday( &ctx->async_data.start_time, NULL );
         }
 
         /* Display the hex code of each character received */
@@ -1734,13 +1860,14 @@ void modbus_process_data_master(modbus_t *ctx){
         *length_to_read -= rc;
 
         if (*length_to_read == 0) {
-			/* Switch to next state when it is time */
+            msg_type_t message_type  = type == PROCESSING_MASTER ? MSG_CONFIRMATION : MSG_INDICATION;
+            /* Switch to next state when it is time */
             switch (*step) {
             case _STEP_FUNCTION:
                 /* Function code position */
                 *length_to_read = compute_meta_length_after_function(
                     buffer[ctx->backend->header_length],
-                    MSG_CONFIRMATION);
+                    message_type);
                 /* If there is META data, break out to trigger read */
 /*
 AARON
@@ -1781,89 +1908,30 @@ AARON
     rc = ctx->backend->check_integrity(ctx, buffer, *data_offset );
     if( rc == -1 ){
         LOG_WARN( "modbus", "check_integrity failed" );
+        /* Reset our buffer */
+        *data_offset = 0;
         return;
     }
 
-    rc = check_confirmation(ctx, ctx->async_data.request, buffer, *data_offset,
-                            &error_code );
-    if (rc == -1){
-        if( error_code != 0 ){
-            ctx->async_data.in_async_operation = 0;
-	    if( ctx->async_data.callback ){
-                ctx->async_data.callback( ctx,
-                                  ctx->async_data.function_code,
-                                  ctx->async_data.addr,
-                                  0,
-                                  ctx->async_data.data,
-                                  error_code,
-                                  ctx->async_data.callback_data );
-	    }else if( ctx->async_data.bit_callback ){
-                ctx->async_data.bit_callback( ctx,
-                                  ctx->async_data.function_code,
-                                  ctx->async_data.addr,
-                                  0,
-                                  (uint8_t*)ctx->async_data.data,
-                                  error_code,
-                                  ctx->async_data.callback_data );
-	    }
-        }
-        LOG_WARN( "modbus", "check_confirmation was invalid, but error code was 0" );
-        return;
-    }
-
-    offset = ctx->backend->header_length;
-
-    ctx->async_data.in_async_operation = 0;
-    switch( ctx->async_data.function_code ){
-    case MODBUS_FC_READ_HOLDING_REGISTERS:
-    case MODBUS_FC_READ_INPUT_REGISTERS:
-        for (i = 0; i < rc; i++) {
-            /* shift reg hi_byte to temp OR with lo_byte */
-            dest[i] = (buffer[offset + 2 + (i << 1)] << 8) |
-                    buffer[offset + 3 + (i << 1)];
-        }
-        ctx->async_data.callback( ctx, 
-                          ctx->async_data.function_code,
-                          ctx->async_data.addr, 
-                          ctx->async_data.nb,
-                          ctx->async_data.data, 
-                          error_code, 
-                          ctx->async_data.callback_data );
-	break;
-    case MODBUS_FC_READ_COILS:
-    case MODBUS_FC_READ_DISCRETE_INPUTS:
-	{
-            uint8_t* data = (uint8_t*)ctx->async_data.data;
-	    int pos = 0;
-	    int temp, bit;
-	    int offset_end;
-
-            offset = ctx->backend->header_length + 2;
-            offset_end = offset + rc;
-	    /* libmodbus uses 1 byte per bit when reporting the 
-	     * data back to the user
-	     */
-	    for (i = offset; i < offset_end; i++) {
-                temp = ctx->async_data.raw_data[i];
-
-                for (bit = 0x01; (bit & 0xff) && (pos < ctx->async_data.nb);) {
-                    data[pos++] = (temp & bit) ? TRUE : FALSE;
-                    bit = bit << 1;
-                }
-	    }
-
-            ctx->async_data.bit_callback( ctx, 
-                          ctx->async_data.function_code,
-                          ctx->async_data.addr, 
-                          ctx->async_data.nb,
-                          data, 
-                          error_code, 
-                          ctx->async_data.callback_data );
-	}
-	break;
+    /*
+     * If we are a master, we need to process the confirmation(response) from the slave.
+     * Otherwise, we should process this message as a slave.
+     */
+    if( type == PROCESSING_MASTER ){
+        modbus_process_master_confirmation(ctx, buffer, data_offset, dest);
+    }else{
+        modbus_reply_callback(ctx, buffer, *data_offset);
+        *data_offset = 0;
     }
 }
 
+void modbus_process_data_master(modbus_t *ctx){
+    modbus_process_data( ctx, PROCESSING_MASTER );
+}
+
+void modbus_process_data_slave(modbus_t *ctx){
+    modbus_process_data( ctx, PROCESSING_SLAVE );
+}
 
 int modbus_read_registers_async(modbus_t *ctx, int addr, int nb, 
                                 modbus_async_callback_t callback,

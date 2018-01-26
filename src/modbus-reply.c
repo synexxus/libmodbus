@@ -236,7 +236,7 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
 
     {
         char buffer[ 256 ];
-        snprintf(buffer, 256, "function %s (%x), %d, %d, max: %d, resp: %d\n",
+        snprintf(buffer, 256, "function %s (%x), address: %d, length: %d, max: %d, resp: %d",
                 names[function], function, address, nb, max_nb, rsp_length);
         LOG_DEBUG( "modbus", buffer );
     }
@@ -257,7 +257,7 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
          * write) so it's necessary to flush. */
         rsp_length = response_exception(
             ctx, &sft, MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE, rsp, TRUE,
-            "Illegal nb of values %d in %s (max %d)\n",
+            "Illegal nb of values %d in %s (max %d)",
             nb, names[function], max_nb);
         goto send_response;
     }
@@ -277,6 +277,7 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
             function, names[function]);
         goto send_response;
     } else if (verified != 0) { /* another error has occured */
+        LOG_DEBUG( "modbus", "Did not verify address properly.  Master will process timeout" );
         errno = EINVAL;
         return -1;
     }
@@ -301,15 +302,26 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
         break;
     case MODBUS_FC_READ_HOLDING_REGISTERS:
     case MODBUS_FC_READ_INPUT_REGISTERS:
-        rsp[rsp_length++] = nb * 2; /* number of register x 2 is the number of bytes */
-        rc = ctx->reply_cb->read(ctx->reply_user_ctx, slave, function,
-                                 address, nb, &rsp[rsp_length], sizeof(rsp) - rsp_length);
-        if (rc <= 0) {
-            rsp_length = 0;
-            goto send_response;
-        }
+        {
+            uint16_t num_bytes = nb * 2;
+            rsp[rsp_length++] = num_bytes; /* number of register x 2 is the number of bytes */
+            rc = ctx->reply_cb->read(ctx->reply_user_ctx, slave, function,
+                                 address, num_bytes, &rsp[rsp_length], sizeof(rsp) - rsp_length);
+            if (rc <= 0) {
+                rsp_length = 0;
+                goto send_response;
+            }
 
-        rsp_length += rc;
+            rsp_length += rc;
+            if( rc != num_bytes ){
+                char debug_buffer[ 128 ];
+                snprintf( debug_buffer, 128, "Data length %d not equal to expected length %d",
+                    rc,
+                    num_bytes);
+                LOG_ERROR( "modbus", debug_buffer );
+                return 0;
+            }
+        }
         break;
 
     case MODBUS_FC_WRITE_MULTIPLE_COILS:
