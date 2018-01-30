@@ -17,23 +17,51 @@
 #include "modbus-private.h"
 #include "modbus.h"
 
+static const char *names[] = {
+    [MODBUS_FC_READ_COILS] = "read_bits",
+    [MODBUS_FC_READ_DISCRETE_INPUTS] = "read_input_bits",
+    [MODBUS_FC_READ_HOLDING_REGISTERS] = "read_registers",
+    [MODBUS_FC_READ_INPUT_REGISTERS] = "read_input_registers",
+    [MODBUS_FC_WRITE_SINGLE_COIL] = "write_bit",
+    [MODBUS_FC_WRITE_SINGLE_REGISTER] = "write_register",
+    [MODBUS_FC_READ_EXCEPTION_STATUS] = "read_exception_status",
+    [MODBUS_FC_WRITE_MULTIPLE_COILS] = "write_multiple_bits",
+    [MODBUS_FC_WRITE_MULTIPLE_REGISTERS] = "write_multiple_registers",
+    [MODBUS_FC_REPORT_SLAVE_ID] = "report_slave_id",
+    [MODBUS_FC_MASK_WRITE_REGISTER] = "mask_write_register",
+    [MODBUS_FC_WRITE_AND_READ_REGISTERS] = "write_and_read_registers",
+};
+
+static const char *exceptions[] = {
+    [MODBUS_EXCEPTION_ILLEGAL_FUNCTION] = "illegal_function",
+    [MODBUS_EXCEPTION_ILLEGAL_DATA_ADDRESS] = "illegal_data_address",
+    [MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE] = "illegal_data_value",
+    [MODBUS_EXCEPTION_SLAVE_OR_SERVER_FAILURE] = "slave_or_server_failure",
+    [MODBUS_EXCEPTION_ACKNOWLEDGE] = "acknowledge",
+    [MODBUS_EXCEPTION_SLAVE_OR_SERVER_BUSY] = "slave_or_server_busy",
+    [MODBUS_EXCEPTION_NEGATIVE_ACKNOWLEDGE] = "negative_acknowledge",
+    [MODBUS_EXCEPTION_MEMORY_PARITY] = "memory_parity",
+    [MODBUS_EXCEPTION_NOT_DEFINED] = "not_defined",
+    [MODBUS_EXCEPTION_GATEWAY_PATH] = "gateway_path",
+    [MODBUS_EXCEPTION_GATEWAY_TARGET] = "gateway_target",
+};
+
 /* Build the exception response */
 static int response_exception(modbus_t *ctx, sft_t *sft,
                               int exception_code, uint8_t *rsp,
-                              unsigned int to_flush,
-                              const char *template, ...)
+                              unsigned int to_flush)
 {
     int rsp_length;
 
     /* Print debug message */
     {
         char buffer[ 256 ];
-        va_list ap;
 
-        va_start(ap, template);
-        snprintf( buffer, 256, template, ap );
-        va_end(ap);
-        LOG_ERROR( "modbus", buffer );
+        snprintf( buffer, 256, "Sending exception %s to function code %s (0x%x)",
+            exceptions[exception_code],
+            names[sft->function],
+            sft->function);
+        LOG_DEBUG( "modbus", buffer);
     }
 
     /* Flush if required */
@@ -50,44 +78,14 @@ static int response_exception(modbus_t *ctx, sft_t *sft,
     return rsp_length;
 }
 
-static const char *names[] = {
-    [MODBUS_FC_READ_COILS] = "read_bits",
-    [MODBUS_FC_READ_DISCRETE_INPUTS] = "read_input_bits",
-    [MODBUS_FC_READ_HOLDING_REGISTERS] = "read_registers",
-    [MODBUS_FC_READ_INPUT_REGISTERS] = "read_input_registers",
-    [MODBUS_FC_WRITE_SINGLE_COIL] = "write_bit",
-    [MODBUS_FC_WRITE_SINGLE_REGISTER] = "write_register",
-    [MODBUS_FC_READ_EXCEPTION_STATUS] = "read_exception_status",
-    [MODBUS_FC_WRITE_MULTIPLE_COILS] = "write_multiple_bits",
-    [MODBUS_FC_WRITE_MULTIPLE_REGISTERS] = "write_multiple_registers",
-    [MODBUS_FC_REPORT_SLAVE_ID] = "report_slave_id",
-    [MODBUS_FC_MASK_WRITE_REGISTER] = "mask_write_register",
-    [MODBUS_FC_WRITE_AND_READ_REGISTERS] = "write_and_read_registers",
-};
+static void convert_registers_to_bytes(const uint16_t *regs, int len, uint8_t *dest){
+   int i;
+   int dest_loc = 0;
 
-int modbus_set_reply_callbacks(modbus_t *ctx, const modbus_reply_callbacks_t *cb, void *user_ctx)
-{
-    if (ctx == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (cb != NULL &&
-        (cb->verify == NULL ||
-         cb->read == NULL ||
-         cb->write == NULL)) {
-
-	LOG_ERROR( "modbus",
-            "callback-structure is not correctly populated");
-
-        errno = EINVAL;
-        return -1;
-    }
-
-    ctx->reply_cb = cb;
-    ctx->reply_user_ctx = user_ctx;
-
-    return 0;
+   for( i = 0; i < len; i++ ){
+       dest[ dest_loc++ ] = regs[ i ] >> 8;
+       dest[ dest_loc++ ] = regs[ i ] & 0xFF;
+   } 
 }
 
 /* Send a response to the received request.
@@ -101,20 +99,15 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
     int offset;
     int slave;
     int function;
-    uint16_t address;
     uint8_t rsp[MAX_MESSAGE_LENGTH];
     int rsp_length = 0;
     sft_t sft;
-
-    if (ctx == NULL || ctx->reply_cb == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
+    modbus_handle_function handler;
+    int ret;
 
     offset = ctx->backend->header_length;
     slave = req[offset - 1];
     function = req[offset];
-    address = (req[offset + 1] << 8) + req[offset + 2];
 
     /* special RTU-cases error checking */
     if (ctx->backend->backend_type == _MODBUS_BACKEND_TYPE_RTU) {
@@ -146,257 +139,34 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
     sft.function = function;
     sft.t_id = ctx->backend->prepare_response_tid(req, &req_length);
 
-    /* first do some verifications
-     * for read and write this is the first stage only
-     * "simple"-function-replies are constructed here 
-     */
-
-    int nb = 0;       /* extracted number of values to written or read */
-    int max_nb = 0;   /* maximum number of values to written or read */
-    int is_read = 0;  /* is this a read-request */
-    int verified = 0; /* return-code of intermediate verify-calls */
-
-    switch (function) {
-    case MODBUS_FC_READ_COILS:
-    case MODBUS_FC_READ_DISCRETE_INPUTS:
-        is_read = 1;
-    /* fall-through */
-    case MODBUS_FC_WRITE_MULTIPLE_COILS:
-        nb = (req[offset + 3] << 8) + req[offset + 4];
-        max_nb = is_read ? MODBUS_MAX_READ_BITS : MODBUS_MAX_WRITE_BITS;
-        break;
-    case MODBUS_FC_WRITE_SINGLE_COIL:
-        nb = 1;
-        max_nb = MODBUS_MAX_WRITE_BITS;
-        break;
-    case MODBUS_FC_MASK_WRITE_REGISTER:
-    case MODBUS_FC_WRITE_SINGLE_REGISTER:
-        nb = 1;
-        max_nb = MODBUS_MAX_WRITE_REGISTERS;
-        break;
-    case MODBUS_FC_READ_HOLDING_REGISTERS:
-    case MODBUS_FC_READ_INPUT_REGISTERS:
-        is_read = 1;
-    /* fall-through */
-    case MODBUS_FC_WRITE_MULTIPLE_REGISTERS:
-        nb = (req[offset + 3] << 8) + req[offset + 4];
-        max_nb = is_read ? MODBUS_MAX_READ_REGISTERS : MODBUS_MAX_WRITE_REGISTERS;
-        break;
-    case MODBUS_FC_WRITE_AND_READ_REGISTERS:
-        nb = (req[offset + 3] << 8) + req[offset + 4];
-        max_nb = MODBUS_MAX_WR_READ_REGISTERS;
-
-        { /* write-part is verified here */
-            uint16_t address_write = (req[offset + 5] << 8) + req[offset + 6];
-            int nb_write = (req[offset + 7] << 8) + req[offset + 8];
-
-            /* first the address verification */
-            verified = ctx->reply_cb->verify(ctx->reply_user_ctx, slave, MODBUS_FC_WRITE_MULTIPLE_REGISTERS,
-                                             address_write, nb_write);
-
-            int nb_write_bytes = req[offset + 9];
-            if (nb_write < 1 ||
-                MODBUS_MAX_WR_WRITE_REGISTERS < nb_write ||
-                nb_write_bytes != nb_write * 2) {
-
-                rsp_length = response_exception(
-                    ctx, &sft, MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE, rsp, TRUE,
-                    "Illegal nb of values (W%d, R%d) in write_and_read_registers (max W%d, R%d)\n",
-                    nb_write, nb, MODBUS_MAX_WR_WRITE_REGISTERS, MODBUS_MAX_WR_READ_REGISTERS);
-            }
-        }
-        break;
-    case MODBUS_FC_REPORT_SLAVE_ID: {
-        int str_len;
-        int byte_count_pos;
-
-        rsp_length = ctx->backend->build_response_basis(&sft, rsp);
-        /* Skip byte count for now */
-        byte_count_pos = rsp_length++;
-        rsp[rsp_length++] = _REPORT_SLAVE_ID;
-        /* Run indicator status to ON */
-        rsp[rsp_length++] = 0xFF;
-        /* LMB + length of LIBMODBUS_VERSION_STRING */
-        str_len = 3 + strlen(LIBMODBUS_VERSION_STRING);
-        memcpy(rsp + rsp_length, "LMB" LIBMODBUS_VERSION_STRING, str_len);
-        rsp_length += str_len;
-        rsp[byte_count_pos] = rsp_length - byte_count_pos - 1;
-    } break;
-    case MODBUS_FC_READ_EXCEPTION_STATUS:
-        LOG_WARN( "modbus", "FIXME Not implemented" );
-        errno = ENOPROTOOPT;
-        return -1;
-        break;
-    default:
-        rsp_length = response_exception(
-            ctx, &sft, MODBUS_EXCEPTION_ILLEGAL_FUNCTION, rsp, TRUE,
-            "Unknown Modbus function code: 0x%0X\n", function);
-        break;
-    }
-
     {
         char buffer[ 256 ];
-        snprintf(buffer, 256, "function %s (%x), address: %d, length: %d, max: %d, resp: %d",
-                names[function], function, address, nb, max_nb, rsp_length);
+        snprintf(buffer, 256, "Attempting to handle function %s (%x)",
+                names[function], function);
         LOG_DEBUG( "modbus", buffer );
     }
 
-    /* we already have a response - we are done */
-    if (rsp_length > 0)
-        goto send_response;
-
-    /* verify this (second part) of the read/write access
-     * MODBUS_FC_WRITE_AND_READ_REGISTERS has two verifications to be done - one is aleady done */
-    if (verified == 0)
-        verified = ctx->reply_cb->verify(ctx->reply_user_ctx, slave, function, address, nb);
-
-    /* out of reply-buffer-range */
-    if (nb < 1 || max_nb < nb) {
-        /* Maybe the indication has been truncated on reading because of
-         * invalid address (eg. nb is 0 but the request contains values to
-         * write) so it's necessary to flush. */
+    handler = ctx->function_handlers[function];
+    if( handler == NULL ){
+        /* No handler for this function code */
         rsp_length = response_exception(
-            ctx, &sft, MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE, rsp, TRUE,
-            "Illegal nb of values %d in %s (max %d)",
-            nb, names[function], max_nb);
+            ctx, &sft,
+            MODBUS_EXCEPTION_ILLEGAL_FUNCTION, rsp, FALSE);
         goto send_response;
     }
 
-    if (verified == EMBXILADD) { /* verify found an invalid address */
-        rsp_length = response_exception(
-            ctx, &sft,
-            MODBUS_EXCEPTION_ILLEGAL_DATA_ADDRESS, rsp, FALSE,
-            "Illegal data address 0x%0X in %s\n",
-            address, names[function]);
-        goto send_response;
-    } else if (verified == EMBXILFUN) { /* verify found an invalid function */
-        rsp_length = response_exception(
-            ctx, &sft,
-            MODBUS_EXCEPTION_ILLEGAL_FUNCTION, rsp, FALSE,
-            "Slave/client does not accept Modbus function code: 0x%0X (%s)\n",
-            function, names[function]);
-        goto send_response;
-    } else if (verified != 0) { /* another error has occured */
-        LOG_DEBUG( "modbus", "Did not verify address properly.  Master will process timeout" );
-        errno = EINVAL;
-        return -1;
-    }
-
-    /* user verification was successful */
-
-    int rc;
     rsp_length = ctx->backend->build_response_basis(&sft, rsp);
 
-    switch (function) {
-    case MODBUS_FC_READ_COILS:
-    case MODBUS_FC_READ_DISCRETE_INPUTS:
-        rsp[rsp_length++] = (nb / 8) + ((nb % 8) ? 1 : 0);
-        rc = ctx->reply_cb->read(ctx->reply_user_ctx, slave, function,
-                                 address, nb, &rsp[rsp_length], sizeof(rsp) - rsp_length);
-        if (rc <= 0) {
-            rsp_length = 0;
-            goto send_response;
-        }
-
-        rsp_length += rc;
-        break;
-    case MODBUS_FC_READ_HOLDING_REGISTERS:
-    case MODBUS_FC_READ_INPUT_REGISTERS:
-        {
-            uint16_t num_bytes = nb * 2;
-            rsp[rsp_length++] = num_bytes; /* number of register x 2 is the number of bytes */
-            rc = ctx->reply_cb->read(ctx->reply_user_ctx, slave, function,
-                                 address, num_bytes, &rsp[rsp_length], sizeof(rsp) - rsp_length);
-            if (rc <= 0) {
-                rsp_length = 0;
-                goto send_response;
-            }
-
-            rsp_length += rc;
-            if( rc != num_bytes ){
-                char debug_buffer[ 128 ];
-                snprintf( debug_buffer, 128, "Data length %d not equal to expected length %d",
-                    rc,
-                    num_bytes);
-                LOG_ERROR( "modbus", debug_buffer );
-                return 0;
-            }
-        }
-        break;
-
-    case MODBUS_FC_WRITE_MULTIPLE_COILS:
-    case MODBUS_FC_WRITE_MULTIPLE_REGISTERS:
-        /* 6 = byte count (and 7 for registers */
-        rc = ctx->reply_cb->write(ctx->reply_user_ctx, slave, function, address, nb, &req[offset + 6]);
-
-        if (rc < 0) {
-            rsp_length = 0;
-            goto send_response;
-        }
-
-        /* 4 to copy the reg/bit address (2) and the quantity of bits/regs */
-        memcpy(rsp + rsp_length, req + rsp_length, 4);
-        rsp_length += 4;
-        break;
-
-    case MODBUS_FC_WRITE_SINGLE_COIL: {
-        int data = (req[offset + 3] << 8) + req[offset + 4]; /* transform 0xff00/0x0000 to 0x01 in a byte */
-
-        if (data == 0xFF00 || data == 0x0) {
-            uint8_t b = data ? ON : OFF;
-            rc = ctx->reply_cb->write(ctx->reply_user_ctx, slave, function, address, 1, &b);
-            if (rc < 0) {
-                rsp_length = 0;
-                goto send_response;
-            }
-            memcpy(rsp, req, req_length);
-            rsp_length = req_length;
-        } else {
-            rsp_length = response_exception(
-                ctx, &sft,
-                MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE, rsp, FALSE,
-                "Illegal data value 0x%0X in write_bit request at address %0X\n",
-                data, address);
-        }
-    } break;
-
-    case MODBUS_FC_MASK_WRITE_REGISTER:
-    case MODBUS_FC_WRITE_SINGLE_REGISTER:
-        rc = ctx->reply_cb->write(ctx->reply_user_ctx, slave, function, address, 1, &req[offset + 3]);
-        if (rc < 0) {
-            rsp_length = 0;
-            goto send_response;
-        }
-        memcpy(rsp, req, req_length);
-        rsp_length = req_length;
-        break;
-
-    case MODBUS_FC_WRITE_AND_READ_REGISTERS: {
-        uint16_t address_write = (req[offset + 5] << 8) + req[offset + 6];
-        int nb_write = (req[offset + 7] << 8) + req[offset + 8];
-
-        rsp_length = ctx->backend->build_response_basis(&sft, rsp);
-        rsp[rsp_length++] = nb << 1;
-
-        /* Write first. 10 and 11 are the offset of the first values to write */
-        rc = ctx->reply_cb->write(ctx->reply_user_ctx, slave, function, address_write, nb_write, &req[offset + 10]);
-        if (rc < 0) {
-            rsp_length = 0;
-            goto send_response;
-        }
-
-        /* and read the data for the response */
-        rc = ctx->reply_cb->read(ctx->reply_user_ctx, slave, function,
-                                 address, nb, &rsp[rsp_length], sizeof(rsp) - rsp_length);
-        if (rc <= 0) {
-            rsp_length = 0;
-            goto send_response;
-        } else
-            rsp_length += rc;
-    } break;
-    default:
-        break;
+    /* The handler will return either the length, or a negative response code */
+    ret = handler(ctx->reply_user_ctx, slave, function, req + offset + 1, req_length - 1, rsp, sizeof(rsp) );
+    if (ret < 0){
+        int exception_val = ret * -1;
+        rsp_length = response_exception(
+            ctx, &sft, exception_val, rsp, TRUE);
+        goto send_response;
     }
+
+    rsp_length += ret;
 
 send_response:
     if ((ctx->backend->backend_type == _MODBUS_BACKEND_TYPE_RTU &&

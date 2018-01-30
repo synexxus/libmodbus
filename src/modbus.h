@@ -76,6 +76,7 @@ MODBUS_BEGIN_DECLS
 #define MODBUS_FC_WRITE_AND_READ_REGISTERS  0x17
 #define MODBUS_FC_READ_FIFO_QUEUE           0x18
 #define MODBUS_FC_ENCAPSULATED_INTERFACE    0x2B
+#define MODBUS_FC_MAX                       0x7F
 
 /* Modbus sub-function codes */
 #define MODBUS_SUBFC_DIAGNOSTIC_QUERY_DATA               0x0000
@@ -203,6 +204,37 @@ typedef enum
     MODBUS_ERROR_RECOVERY_PROTOCOL      = (1<<2)
 } modbus_error_recovery_mode;
 
+/**
+ * Generic modbus handling function
+ *
+ * @param user_ctx The user context
+ * @param slave The slave number that this request is for
+ * @param function The function code that this is for
+ * @param req The incoming data from the master
+ * @param req_len The length of data from the master
+ * @param rsp Fill this array in with the data you want to send back to the master
+ * @param rsp_len How long the returned data is
+ * @return length of return data if successful, (negative)MODBUS_EXCEPTION_XXXX otherwise
+ */
+typedef int (*modbus_handle_function)(void *user_ctx, int slave, int function, const uint8_t *req, int req_len, uint8_t *rsp, int rsp_len);
+
+/**
+ * This function should read the coils from a device.
+ *
+ * @param user_ctx The user's context
+ * @param slave The slave number that this request is for
+ * @param address The starting address for the coils
+ * @param num_coils How many coils to read
+ * @param bytes The return data.  This array is num_coils long; Set one bit value per byte
+ * @return length of return data if successful, (negative)MODBUS_EXCEPTION_XXXX otherwise
+ */ 
+typedef int (*modbus_read_coil_function)(void *user_ctx, int slave, uint16_t address, int num_coils, uint8_t *bytes);
+typedef int (*modbus_write_coil_function)(void *user_ctx, int slave, uint16_t address, int num_coils, uint8_t *bytes);
+typedef int (*modbus_read_discrete_input_function)(void *user_ctx, int slave, uint16_t address, int num_inputs, uint8_t *bytes);
+typedef int (*modbus_read_input_register_function)(void *user_ctx, int slave, uint16_t address, int num_registers, uint16_t *registers);
+typedef int (*modbus_read_holding_register_function)(void *user_ctx, int slave, uint16_t address, int num_registers, uint16_t *registers);
+typedef int (*modbus_write_holding_register_function)(void *user_ctx, int slave, uint16_t address, int num_registers, uint16_t *registers);
+
 typedef struct {
     int (*verify)(void *user_ctx, int slave, int function, uint16_t address, int nb);
     int (*read)(void *user_ctx, int slave, int function, uint16_t address, int nb, uint8_t bytes[], int len);
@@ -275,6 +307,39 @@ MODBUS_API int modbus_set_reply_callbacks(modbus_t *ctx,
                                           void *user_ctx);
 MODBUS_API int modbus_reply_callback(modbus_t *ctx, const uint8_t *req,
                                      int req_length);
+/**
+ * Callback API
+ *
+ * The callbacks are handled in the following order:
+ * - The specific callback function is used(if available)
+ * - The general callback function is used(if available)
+ *
+ * If there is no handler for the given function code, an ILLEGAL_FUNCTION
+ * will be returned to the modbus master
+ */
+
+MODBUS_API void modbus_set_handler_context(modbus_t *ctx, void *user_ctx);
+MODBUS_API void* modbus_get_handler_context(modbus_t *ctx);
+
+/**
+ * Set a custom function handler.
+ * 
+ * If this is NULL, deletes the handler.
+ */
+MODBUS_API int modbus_set_function_handler(modbus_t *ctx, int function_code,
+                                           modbus_handle_function handler);
+
+MODBUS_API int modbus_set_coil_handlers(modbus_t *ctx, 
+                                        modbus_read_coil_function rd_handler,
+                                        modbus_write_coil_function wr_handler);
+MODBUS_API int modbus_set_discrete_input_handler(modbus_t *ctx,
+                                        modbus_read_discrete_input_function rd_handler);
+MODBUS_API int modbus_set_input_handler(modbus_t *ctx,
+                                        modbus_read_input_register_function rd_handler);
+MODBUS_API int modbus_set_holding_handlers(modbus_t *ctx,
+                                           modbus_read_holding_register_function rd_handler,
+                                           modbus_write_holding_register_function wr_handler);
+
 
 /**
  * Asynchronous API
@@ -387,6 +452,7 @@ MODBUS_API void modbus_set_bits_from_byte(uint8_t *dest, int idx, const uint8_t 
 MODBUS_API void modbus_set_bits_from_bytes(uint8_t *dest, int idx, unsigned int nb_bits,
                                        const uint8_t *tab_byte);
 MODBUS_API uint8_t modbus_get_byte_from_bits(const uint8_t *src, int idx, unsigned int nb_bits);
+MODBUS_API void modbus_set_bytes_from_bits(const uint8_t *src, int idx, int nb_bits, uint8_t* dest);
 MODBUS_API float modbus_get_float(const uint16_t *src);
 MODBUS_API float modbus_get_float_abcd(const uint16_t *src);
 MODBUS_API float modbus_get_float_dcba(const uint16_t *src);

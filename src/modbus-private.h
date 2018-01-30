@@ -131,6 +131,18 @@ struct _modbus_async_data{
     uint8_t function_code;
 };
 
+/*
+ * Holds all of our callback functions when we are a slave
+ */
+struct _modbus_slave_callbacks{
+    modbus_read_coil_function read_coil;
+    modbus_write_coil_function write_coil;
+    modbus_read_discrete_input_function read_discrete;
+    modbus_read_input_register_function read_input;
+    modbus_read_holding_register_function read_holding;
+    modbus_write_holding_register_function write_holding;
+};
+
 struct _modbus {
     /* Slave address */
     int slave;
@@ -144,8 +156,8 @@ struct _modbus {
     const modbus_backend_t *backend;
     void *backend_data;
     struct _modbus_async_data async_data;
-    const modbus_reply_callbacks_t *reply_cb;
     void *reply_user_ctx;
+    modbus_handle_function function_handlers[127];
 };
 
 void _modbus_init_common(modbus_t *ctx);

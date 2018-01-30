@@ -2042,6 +2042,28 @@ int modbus_is_in_async_operation( modbus_t* ctx ){
     return ctx->async_data.in_async_operation;
 }
 
+
+void modbus_set_handler_context(modbus_t *ctx, void *user_ctx){
+    ctx->reply_user_ctx = user_ctx;
+}
+
+void* modbus_get_handler_context(modbus_t *ctx){
+    return ctx->reply_user_ctx;
+}
+
+int modbus_set_function_handler(modbus_t *ctx, int function_code,
+                                           modbus_handle_function handler){
+    if( ctx == NULL ||
+        function_code < 0 ||
+        function_code > 127 ){
+        errno = EINVAL;
+        return -1;
+    }
+
+    ctx->function_handlers[ function_code ] = handler;
+    return 0;
+}
+
 #ifndef HAVE_STRLCPY
 /*
  * Function strlcpy was originally developed by

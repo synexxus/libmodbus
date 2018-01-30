@@ -129,6 +129,28 @@ uint8_t modbus_get_byte_from_bits(const uint8_t *src, int idx,
     return value;
 }
 
+/* Given modbus-formatted databits, convert to 1 bit per byte in dest */
+void modbus_set_bytes_from_bits(const uint8_t *src, int idx, int nb_bits, uint8_t* dest){
+   int mask;
+   int dest_loc = 0;
+   int num_bytes = nb_bits / 8 + 1;
+   int src_loc;
+   
+   for( src_loc = 0; src_loc < num_bytes; src_loc++ ){
+       mask = 0x01;
+
+       while( mask != 0x80 ){
+           if( src[src_loc + idx] & mask ){
+               dest[ dest_loc ] = 1;
+           }else{
+               dest[ dest_loc ] = 0;
+           }
+           mask = mask << 1;
+           dest_loc++;
+       }
+   }
+}
+
 /* Get a float from 4 bytes (Modbus) without any conversion (ABCD) */
 float modbus_get_float_abcd(const uint16_t *src)
 {
