@@ -457,6 +457,11 @@ static int _modbus_rtu_check_integrity(modbus_t *ctx, uint8_t *msg,
     uint16_t crc_received;
     int slave = msg[0];
 
+    if( msg_length <= 0 ){
+        errno = EMBBADDATA;
+        return -1;
+    }
+
     /* Filter on the Modbus unit identifier (slave) in RTU mode to avoid useless
      * CRC computing. Accept if it is the broadcast address or the slave in the context
      * is set to MODBUS_SLAVE_ACCEPT_ALL - then assumes Multi-Slave-server */

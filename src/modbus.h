@@ -329,6 +329,17 @@ MODBUS_API void* modbus_get_handler_context(modbus_t *ctx);
 MODBUS_API int modbus_set_function_handler(modbus_t *ctx, int function_code,
                                            modbus_handle_function handler);
 
+/**
+ * Convert an array of uint8_t to uint16_t.
+ *
+ * @param req The uint8 array to convert
+ * @param req_len How long the uint8 array is
+ * @param out_regs The uint16 array to put data into
+ * @param out_len How long the uint16 array is
+ * @returns How may registers were converted, or -1 if out_regs is not large enough
+ */
+MODBUS_API int modbus_convert_uint8_to_uint16( const uint8_t *req, int req_len, uint16_t *out_regs, int out_len );
+
 MODBUS_API int modbus_set_coil_handlers(modbus_t *ctx, 
                                         modbus_read_coil_function rd_handler,
                                         modbus_write_coil_function wr_handler);

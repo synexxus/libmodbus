@@ -30,6 +30,7 @@ static const char *names[] = {
     [MODBUS_FC_REPORT_SLAVE_ID] = "report_slave_id",
     [MODBUS_FC_MASK_WRITE_REGISTER] = "mask_write_register",
     [MODBUS_FC_WRITE_AND_READ_REGISTERS] = "write_and_read_registers",
+    [MODBUS_FC_WRITE_AND_READ_REGISTERS + 1] = "UNKNOWN",
 };
 
 static const char *exceptions[] = {
@@ -88,6 +89,43 @@ static void convert_registers_to_bytes(const uint16_t *regs, int len, uint8_t *d
    } 
 }
 
+static int has_function_callback(modbus_t *ctx,
+                   int function ){
+    switch( function ){
+    case MODBUS_FC_READ_INPUT_REGISTERS:
+        return ctx->function_callbacks.read_input > 0;
+    }
+
+    return 0;
+}
+
+static int do_function_callback(modbus_t *ctx, int slave, int function,
+                                const uint8_t *req, int req_len,
+                                uint8_t *rsp, uint8_t rsp_len ){
+    int address;
+    int nb;
+    int ret;
+    uint8_t output_data_u8[ 255 ];
+    uint16_t output_data_u16[ 128 ];
+
+    if( req_len < 4 ){
+        return -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+    }
+    address = (req[0] << 8) + req[1];
+    nb = (req[2] << 8) + req[3];
+
+    switch( function ){
+    case MODBUS_FC_READ_INPUT_REGISTERS:
+        ret = ctx->function_callbacks.read_input(ctx->reply_user_ctx, slave, address, nb, output_data_u16 );
+        if( ret < 0 ) goto bad_stat;
+        convert_registers_to_bytes( output_data_u16, ret, rsp );
+        break;
+    }
+
+bad_stat:
+    return ret;
+}
+
 /* Send a response to the received request.
    Analyses the request and constructs a response.
 
@@ -140,25 +178,40 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
     sft.t_id = ctx->backend->prepare_response_tid(req, &req_length);
 
     {
+        int names_func;
+        if( function <= MODBUS_FC_WRITE_AND_READ_REGISTERS ){
+            names_func = function;
+        }else{
+            names_func = MODBUS_FC_WRITE_AND_READ_REGISTERS + 1;
+        }
         char buffer[ 256 ];
         snprintf(buffer, 256, "Attempting to handle function %s (%x)",
-                names[function], function);
+                names[names_func], function);
         LOG_DEBUG( "modbus", buffer );
     }
 
     handler = ctx->function_handlers[function];
     if( handler == NULL ){
-        /* No handler for this function code */
-        rsp_length = response_exception(
-            ctx, &sft,
-            MODBUS_EXCEPTION_ILLEGAL_FUNCTION, rsp, FALSE);
-        goto send_response;
+        /* No handler for this function code - check specific handlers */
+        int valid_function_code = has_function_callback( ctx, function );
+
+        if( !valid_function_code ){
+            rsp_length = response_exception(
+                ctx, &sft,
+                MODBUS_EXCEPTION_ILLEGAL_FUNCTION, rsp, FALSE);
+            goto send_response;
+        }
     }
 
     rsp_length = ctx->backend->build_response_basis(&sft, rsp);
 
-    /* The handler will return either the length, or a negative response code */
-    ret = handler(ctx->reply_user_ctx, slave, function, req + offset + 1, req_length - 1, rsp, sizeof(rsp) );
+    if( has_function_callback( ctx, function ) ){
+        ret = do_function_callback(ctx, slave, function, req + offset + 1, req_length - 1, rsp, sizeof(rsp) );
+    }else{
+        /* The handler will return either the length, or a negative response code */
+        ret = handler(ctx->reply_user_ctx, slave, function, req + offset + 1, req_length - 1, rsp, sizeof(rsp) );
+    }
+
     if (ret < 0){
         int exception_val = ret * -1;
         rsp_length = response_exception(

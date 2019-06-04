@@ -1885,7 +1885,7 @@ AARON
                 continue;
             case _STEP_META:
                 *length_to_read = compute_data_length_after_meta(
-                    ctx, buffer, MSG_CONFIRMATION);
+                    ctx, buffer, message_type);
                 if ((*data_offset + *length_to_read) > (int)ctx->backend->max_adu_length) {
                     errno = EMBBADDATA;
                     _error_print(ctx, "too many data");
@@ -1910,6 +1910,7 @@ AARON
         LOG_WARN( "modbus", "check_integrity failed" );
         /* Reset our buffer */
         *data_offset = 0;
+        *step = _STEP_FUNCTION;
         return;
     }
 
@@ -2063,6 +2064,13 @@ int modbus_set_function_handler(modbus_t *ctx, int function_code,
     ctx->function_handlers[ function_code ] = handler;
     return 0;
 }
+
+int modbus_set_input_handler(modbus_t *ctx,
+                             modbus_read_input_register_function rd_handler){
+    ctx->function_callbacks.read_input = rd_handler;
+    return 0;
+}
+
 
 #ifndef HAVE_STRLCPY
 /*
