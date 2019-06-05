@@ -89,11 +89,81 @@ static void convert_registers_to_bytes(const uint16_t *regs, int len, uint8_t *d
    } 
 }
 
+static int convert_bytes_to_registers(const uint8_t *bytes, int bytes_len, uint16_t *dest){
+    int pos;
+    int dest_pos = 0;
+
+    for( pos = 0; pos < bytes_len; pos += 2 ){
+        dest[dest_pos++] = (bytes[pos]) << 8 | bytes[pos+1];
+    }
+
+    return dest_pos;
+}
+
+static int convert_bytes_to_bits(const uint8_t *bits,
+                              int bits_len,
+                              uint8_t *rsp)
+{
+    int shift = 0;
+    /* Instead of byte (not allowed in Win32) */
+    int one_byte = 0;
+    int i;
+    int offset = 0;
+
+    for (i = 0; i < bits_len; i++) {
+        one_byte |= bits[i] << shift;
+        if (shift == 7) {
+            /* Byte is full */
+            rsp[offset++] = one_byte;
+            one_byte = shift = 0;
+        } else {
+            shift++;
+        }
+    }
+
+    if (shift != 0)
+        rsp[offset++] = one_byte;
+
+    return offset;
+}
+
+static int convert_bits_to_bytes( const uint8_t* bits,
+                                  int bits_len,
+                                  uint8_t* as_bytes){
+    int shift = 0;
+    int val;
+    int pos;
+    int bytes_pos = 0;
+
+    as_bytes[0] = 0;
+    for( pos = 0; pos < bits_len; pos++ ){
+        val = bits[pos] << shift;
+        as_bytes[bytes_pos] |= val;
+        shift++;
+        if( shift > 7 ){
+            bytes_pos++;
+            shift = 0;
+        }
+    }
+
+    return bytes_pos;
+}
+
 static int has_function_callback(modbus_t *ctx,
                    int function ){
     switch( function ){
     case MODBUS_FC_READ_INPUT_REGISTERS:
         return ctx->function_callbacks.read_input > 0;
+    case MODBUS_FC_READ_DISCRETE_INPUTS:
+        return ctx->function_callbacks.read_discrete > 0;
+    case MODBUS_FC_READ_HOLDING_REGISTERS:
+        return ctx->function_callbacks.read_holding > 0;
+    case MODBUS_FC_WRITE_SINGLE_COIL:
+        return ctx->function_callbacks.write_coil > 0;
+    case MODBUS_FC_WRITE_SINGLE_REGISTER:
+        return ctx->function_callbacks.write_holding > 0;
+    case MODBUS_FC_READ_COILS:
+        return ctx->function_callbacks.read_coil > 0;
     }
 
     return 0;
@@ -117,8 +187,59 @@ static int do_function_callback(modbus_t *ctx, int slave, int function,
     switch( function ){
     case MODBUS_FC_READ_INPUT_REGISTERS:
         ret = ctx->function_callbacks.read_input(ctx->reply_user_ctx, slave, address, nb, output_data_u16 );
-        if( ret < 0 ) goto bad_stat;
-        convert_registers_to_bytes( output_data_u16, ret, rsp );
+        if( ret < 0 || (ret * 2) > MODBUS_MAX_PDU_LENGTH ) goto bad_stat;
+        if( ret != nb ) {
+            ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+            goto bad_stat;
+        }
+        convert_registers_to_bytes( output_data_u16, ret, rsp + 1 );
+        ret *= 2;
+        rsp[0] = ret;
+        ret += 1;
+        break;
+    case MODBUS_FC_READ_DISCRETE_INPUTS:
+        ret = ctx->function_callbacks.read_discrete(ctx->reply_user_ctx, slave, address, nb, output_data_u8 );
+        if( ret != nb ) {
+            ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+            goto bad_stat;
+        }
+        ret = convert_bits_to_bytes( output_data_u8, ret, rsp + 1 );
+        rsp[0] = ret;
+        ret += 1;
+        break;
+    case MODBUS_FC_READ_HOLDING_REGISTERS:
+        ret = ctx->function_callbacks.read_holding(ctx->reply_user_ctx, slave, address, nb, output_data_u16 );
+        if( ret < 0 || (ret * 2) > MODBUS_MAX_PDU_LENGTH ) goto bad_stat;
+        if( ret != nb ) {
+            ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+            goto bad_stat;
+        }
+        convert_registers_to_bytes( output_data_u16, ret, rsp + 1 );
+        ret *= 2;
+        rsp[0] = ret;
+        ret += 1;
+        break;
+    case MODBUS_FC_WRITE_SINGLE_COIL:
+        {
+            int bytes_len = convert_bytes_to_bits(req, nb, output_data_u8);
+            ret = ctx->function_callbacks.write_coil(ctx->reply_user_ctx, slave, address, bytes_len, output_data_u8 );
+        }
+        break;
+    case MODBUS_FC_WRITE_SINGLE_REGISTER:
+        {
+            int regs_len = convert_bytes_to_registers(req + 4, req_len - 4, output_data_u16 );
+            ret = ctx->function_callbacks.write_holding(ctx->reply_user_ctx, slave, address, regs_len, output_data_u16);
+        }
+        break;
+    case MODBUS_FC_READ_COILS:
+        ret = ctx->function_callbacks.read_coil(ctx->reply_user_ctx, slave, address, nb, output_data_u8 );
+        if( ret != nb ) {
+            ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+            goto bad_stat;
+        }
+        ret = convert_bits_to_bytes( output_data_u8, ret, rsp + 1 );
+        rsp[0] = ret;
+        ret += 1;
         break;
     }
 
@@ -206,10 +327,18 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
     rsp_length = ctx->backend->build_response_basis(&sft, rsp);
 
     if( has_function_callback( ctx, function ) ){
-        ret = do_function_callback(ctx, slave, function, req + offset + 1, req_length - 1, rsp, sizeof(rsp) );
+        ret = do_function_callback(ctx, slave, function,
+                                   req + offset + 1,
+                                   req_length - 1,
+                                   rsp + rsp_length,
+                                   sizeof(rsp) - rsp_length );
     }else{
         /* The handler will return either the length, or a negative response code */
-        ret = handler(ctx->reply_user_ctx, slave, function, req + offset + 1, req_length - 1, rsp, sizeof(rsp) );
+        ret = handler(ctx->reply_user_ctx, slave, function,
+                                   req + offset + 1,
+                                   req_length - 1,
+                                   rsp + rsp_length,
+                                   sizeof(rsp) - rsp_length );
     }
 
     if (ret < 0){

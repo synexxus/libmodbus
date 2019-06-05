@@ -1923,6 +1923,7 @@ AARON
     }else{
         modbus_reply_callback(ctx, buffer, *data_offset);
         *data_offset = 0;
+        *step = _STEP_FUNCTION;
     }
 }
 
@@ -2071,6 +2072,27 @@ int modbus_set_input_handler(modbus_t *ctx,
     return 0;
 }
 
+int modbus_set_coil_handlers(modbus_t *ctx, 
+                                        modbus_read_coil_function rd_handler,
+                                        modbus_write_coil_function wr_handler){
+    ctx->function_callbacks.read_coil = rd_handler;
+    ctx->function_callbacks.write_coil = wr_handler;
+    return 0;
+}
+
+int modbus_set_discrete_input_handler(modbus_t *ctx,
+                                        modbus_read_discrete_input_function rd_handler){
+    ctx->function_callbacks.read_discrete = rd_handler;
+    return 0;
+}
+
+int modbus_set_holding_handlers(modbus_t *ctx,
+                                           modbus_read_holding_register_function rd_handler,
+                                           modbus_write_holding_register_function wr_handler){
+    ctx->function_callbacks.read_holding = rd_handler;
+    ctx->function_callbacks.write_holding = wr_handler;
+    return 0;
+}
 
 #ifndef HAVE_STRLCPY
 /*
