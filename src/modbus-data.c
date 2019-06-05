@@ -44,6 +44,10 @@
 #    undef bswap_32
 #    define bswap_32 __builtin_bswap32
 #  endif
+#  if GCC_VERSION >= 480
+#    undef bswap_16
+#    define bswap_16 __builtin_bswap16
+#  endif
 #endif
 
 #if defined(_MSC_VER) && (_MSC_VER >= 1400)
@@ -51,7 +55,7 @@
 #  define bswap_16 _byteswap_ushort
 #endif
 
-#if !defined(__CYGWIN__) && !defined(bswap_16)
+#if !defined(bswap_16)
 #  warning "Fallback on C functions for bswap_16"
 static inline uint16_t bswap_16(uint16_t x)
 {
@@ -123,6 +127,28 @@ uint8_t modbus_get_byte_from_bits(const uint8_t *src, int idx,
     }
 
     return value;
+}
+
+/* Given modbus-formatted databits, convert to 1 bit per byte in dest */
+void modbus_set_bytes_from_bits(const uint8_t *src, int idx, int nb_bits, uint8_t* dest){
+   int mask;
+   int dest_loc = 0;
+   int num_bytes = nb_bits / 8 + 1;
+   int src_loc;
+   
+   for( src_loc = 0; src_loc < num_bytes; src_loc++ ){
+       mask = 0x01;
+
+       while( mask != 0x80 ){
+           if( src[src_loc + idx] & mask ){
+               dest[ dest_loc ] = 1;
+           }else{
+               dest[ dest_loc ] = 0;
+           }
+           mask = mask << 1;
+           dest_loc++;
+       }
+   }
 }
 
 /* Get a float from 4 bytes (Modbus) without any conversion (ABCD) */

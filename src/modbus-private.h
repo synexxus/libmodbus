@@ -46,6 +46,9 @@ MODBUS_BEGIN_DECLS
 #define _RESPONSE_TIMEOUT    500000
 #define _BYTE_TIMEOUT        500000
 
+/* Max between RTU and TCP max adu length (so TCP) */
+#define MAX_MESSAGE_LENGTH 260
+
 typedef enum {
     _MODBUS_BACKEND_TYPE_RTU=0,
     _MODBUS_BACKEND_TYPE_TCP
@@ -128,6 +131,18 @@ struct _modbus_async_data{
     uint8_t function_code;
 };
 
+/*
+ * Holds all of our callback functions when we are a slave
+ */
+struct modbus_slave_callbacks{
+    modbus_read_coil_function read_coil;
+    modbus_write_coil_function write_coil;
+    modbus_read_discrete_input_function read_discrete;
+    modbus_read_input_register_function read_input;
+    modbus_read_holding_register_function read_holding;
+    modbus_write_holding_register_function write_holding;
+};
+
 struct _modbus {
     /* Slave address */
     int slave;
@@ -137,14 +152,20 @@ struct _modbus {
     int error_recovery;
     struct timeval response_timeout;
     struct timeval byte_timeout;
+    struct timeval indication_timeout;
     const modbus_backend_t *backend;
     void *backend_data;
     struct _modbus_async_data async_data;
+    void *reply_user_ctx;
+    modbus_handle_function function_handlers[127];
+    struct modbus_slave_callbacks function_callbacks;
 };
 
 void _modbus_init_common(modbus_t *ctx);
 void _error_print(modbus_t *ctx, const char *context);
 int _modbus_receive_msg(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type);
+void _sleep_response_timeout(modbus_t *ctx);
+int _modbus_send_msg(modbus_t *ctx, uint8_t *msg, int msg_length);
 
 #ifndef HAVE_STRLCPY
 size_t strlcpy(char *dest, const char *src, size_t dest_size);
