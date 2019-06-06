@@ -67,7 +67,6 @@ static int response_exception(modbus_t *ctx, sft_t *sft,
 
     /* Flush if required */
     if (to_flush) {
-        _sleep_response_timeout(ctx);
         modbus_flush(ctx);
     }
 

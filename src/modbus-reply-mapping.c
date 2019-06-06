@@ -46,22 +46,16 @@ static int modbus_verify_registers(void *user_ctx, int function, const uint8_t *
     int ret = 0;
     modbus_mapping_t *mb_mapping = user_ctx;
     int is_input = (function == MODBUS_FC_READ_INPUT_REGISTERS);
+    int max_rw = (function == MODBUS_FC_READ_INPUT_REGISTERS) ? MODBUS_MAX_READ_REGISTERS : MODBUS_MAX_WRITE_REGISTERS;
 
     if( req_len < 4 ){
         return -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
     }
     *address = (req[0] << 8) + req[1];
     *nb = (req[2] << 8) + req[3];
-    if( is_input ){
-        if (*nb < 1 || *nb > MODBUS_MAX_READ_REGISTERS ){
-            ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
-            goto out;
-        }
-    }else{
-        if (*nb < 1 || *nb > MODBUS_MAX_WRITE_REGISTERS ){
-            ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
-            goto out;
-        }
+    if (*nb < 1 || *nb > max_rw ){
+        ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+        goto out;
     }
 
     int nb_registers = is_input ? mb_mapping->nb_input_registers : mb_mapping->nb_registers;
