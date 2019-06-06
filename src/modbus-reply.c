@@ -329,14 +329,14 @@ int modbus_reply_callback(modbus_t *ctx, const uint8_t *req, int req_length)
     if( has_function_callback( ctx, function ) ){
         ret = do_function_callback(ctx, slave, function,
                                    req + offset + 1,
-                                   req_length - 1,
+                                   req_length - offset - 1,
                                    rsp + rsp_length,
                                    sizeof(rsp) - rsp_length );
     }else{
         /* The handler will return either the length, or a negative response code */
         ret = handler(ctx->reply_user_ctx, slave, function,
                                    req + offset + 1,
-                                   req_length - 1,
+                                   req_length - offset - 1,
                                    rsp + rsp_length,
                                    sizeof(rsp) - rsp_length );
     }

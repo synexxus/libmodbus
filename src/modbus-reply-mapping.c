@@ -52,15 +52,24 @@ static int modbus_verify_registers(void *user_ctx, int function, const uint8_t *
     }
     *address = (req[0] << 8) + req[1];
     *nb = (req[2] << 8) + req[3];
-    if (*nb == 0){
-        ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
-        goto out;
+    if( is_input ){
+        if (*nb < 1 || *nb > MODBUS_MAX_READ_REGISTERS ){
+            ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+            goto out;
+        }
+    }else{
+        if (*nb < 1 || *nb > MODBUS_MAX_WRITE_REGISTERS ){
+            ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+            goto out;
+        }
     }
 
     int nb_registers = is_input ? mb_mapping->nb_input_registers : mb_mapping->nb_registers;
     int start_registers = is_input ? mb_mapping->start_input_registers : mb_mapping->start_registers;
     int mapping_address = *address - start_registers;
-    if (mapping_address < 0 || (mapping_address + *nb) > nb_registers)
+    if (mapping_address < 0 ||
+          mapping_address >= nb_registers ||
+          (mapping_address + *nb) > nb_registers)
         ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
 
 out:
@@ -80,8 +89,8 @@ static int modbus_verify_single_register(void *user_ctx, const uint8_t *req, int
     int nb_registers = mb_mapping->nb_registers;
     int start_registers = mb_mapping->start_registers;
     int mapping_address = *address - start_registers;
-    if (mapping_address < 0 || mapping_address > nb_registers)
-        ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+    if (mapping_address < 0 || mapping_address >= nb_registers)
+        ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
 
     return ret;
 }
@@ -165,11 +174,16 @@ static int modbus_verify_bits(void *user_ctx, int function, const uint8_t *req, 
     int max_nb = MODBUS_MAX_READ_BITS;
     int ret = 0;
     modbus_mapping_t *mb_mapping = user_ctx;
+    int max_rw_value = (function == MODBUS_FC_READ_DISCRETE_INPUTS) ? MODBUS_MAX_READ_BITS : MODBUS_MAX_WRITE_BITS;
 
     if( req_len < 4 ){
         return -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
     }
     *address = (req[0] << 8) + req[1];
+
+    if( num_bits < 1 || num_bits > max_rw_value ){
+        return -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+    }
     
     /* Note: we only need to check for DISCRETE_INPUTS, as otherwise we default to the coils
      * which are both read/write, so the same code is used to validate
@@ -219,10 +233,10 @@ static int modbus_handle_write_multiple_coil(void *user_ctx, int slave, int func
     modbus_mapping_t *mb_mapping = user_ctx;
     int address;
     int ret;
-    int bit_count = req[2] + req[3];
+    int bit_count = (req[2] << 8) + req[3];
     int byte_count = req[4];
 
-    ret = modbus_verify_bits(user_ctx, function, req, req_len, &address, 1);
+    ret = modbus_verify_bits(user_ctx, function, req, req_len, &address, bit_count);
     if( ret < 0 ){
         goto out;
     }
@@ -269,6 +283,109 @@ out:
     return ret;
 }
 
+static int modbus_handle_write_and_read_registers(void *user_ctx, int slave, int function, const uint8_t *req, int req_len, uint8_t *rsp, int rsp_len){
+    int ret;
+    int read_status;
+    int read_addr;
+    int read_qty;
+    int write_status;
+    int write_addr;
+    int write_qty;
+    int bytes_to_write;
+
+    /*
+     * First check that our data for read/write looks good
+     */
+    read_status = modbus_verify_registers(user_ctx, MODBUS_FC_READ_HOLDING_REGISTERS, req, 4, &read_addr, &read_qty);
+    write_status = modbus_verify_registers(user_ctx, MODBUS_FC_WRITE_MULTIPLE_REGISTERS, req + 4, req_len - 4, &write_addr, &write_qty);
+    if( read_status == -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE ||
+        write_status == -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE ){
+        ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+        goto out;
+    }else if( read_status < 0 ){
+        ret = read_status;
+        goto out;
+    }else if( write_status < 0 ){
+        ret = write_status;
+        goto out;
+    }
+
+    bytes_to_write = req[8];
+    if( bytes_to_write != (write_qty * 2) ){
+        ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+        goto out;
+    }
+
+    /*
+     * Write the holding registers.  Indexing 4 bytes off of req is the same as a standard
+     * read holding register command
+     */
+    ret = modbus_handle_write_multiple_registers(user_ctx, slave, MODBUS_FC_WRITE_MULTIPLE_REGISTERS, req + 4, req_len - 4, rsp, rsp_len);
+    if( ret < 0 ){
+        ret = -MODBUS_EXCEPTION_SLAVE_OR_SERVER_FAILURE;
+        goto out;
+    }
+
+    ret = modbus_handle_read_input_holding_regs(user_ctx, slave, MODBUS_FC_READ_HOLDING_REGISTERS, req, 4, rsp, rsp_len);
+
+out:
+    return ret;
+}
+
+static int modbus_handle_mask_write(void *user_ctx, int slave, int function, const uint8_t *req, int req_len, uint8_t *rsp, int rsp_len){
+    modbus_mapping_t *mb_mapping = user_ctx;
+    int address;
+    uint8_t tmp_req[4];
+    uint16_t and_mask;
+    uint16_t or_mask;
+    int ign;
+    int mapping_address;
+    uint16_t data;
+    int ret;
+
+    /* To re-use modbus_verify_registers, pretend that the number of registers to read is 1 */
+    tmp_req[0] = req[0];
+    tmp_req[1] = req[1];
+    tmp_req[2] = 0;
+    tmp_req[3] = 1;
+
+    ret = modbus_verify_registers(user_ctx, MODBUS_FC_READ_HOLDING_REGISTERS, tmp_req, 4, &address, &ign);
+    if( ret < 0 ){
+        goto out;
+    }
+
+    and_mask = (req[2] << 8) | req[3];
+    or_mask = (req[4] << 8) | req[5];
+    mapping_address = address - mb_mapping->start_registers;
+    data = mb_mapping->tab_registers[mapping_address];
+    data = (data & and_mask) | (or_mask & (~and_mask));
+    mb_mapping->tab_registers[mapping_address] = data;
+    memcpy(rsp, req, req_len);
+    ret = req_len;
+
+out:
+    return ret;
+}
+
+static int modbus_report_slave_id2(void *user_ctx, int slave, int function, const uint8_t *req, int req_len, uint8_t *rsp, int rsp_len){
+    char buffer[28];
+    int str_len;
+    int ret;
+
+    snprintf( buffer, 28, "LMB%s", LIBMODBUS_VERSION_STRING);
+
+    rsp[1] = _REPORT_SLAVE_ID;
+    rsp[2] = 0xFF; /* Run indicator status */
+    str_len = strlen( buffer );
+    memcpy( rsp + 3, buffer, str_len );
+    rsp[0] = str_len + 2;
+
+    ret = str_len + 3;
+
+out:
+    return ret;
+}
+
 int modbus_reply(modbus_t *ctx, const uint8_t *req,
                  int req_length, modbus_mapping_t *mb_mapping)
 {
@@ -290,6 +407,9 @@ int modbus_reply(modbus_t *ctx, const uint8_t *req,
     modbus_set_function_handler(ctx, MODBUS_FC_READ_INPUT_REGISTERS, modbus_handle_read_input_holding_regs);
     modbus_set_function_handler(ctx, MODBUS_FC_WRITE_SINGLE_REGISTER, modbus_handle_write_register);
     modbus_set_function_handler(ctx, MODBUS_FC_WRITE_MULTIPLE_REGISTERS, modbus_handle_write_multiple_registers);
+    modbus_set_function_handler(ctx, MODBUS_FC_WRITE_AND_READ_REGISTERS, modbus_handle_write_and_read_registers);
+    modbus_set_function_handler(ctx, MODBUS_FC_MASK_WRITE_REGISTER, modbus_handle_mask_write);
+    modbus_set_function_handler(ctx, MODBUS_FC_REPORT_SLAVE_ID, modbus_report_slave_id2);
 
     ret = modbus_reply_callback(ctx, req, req_length);
 
