@@ -142,6 +142,7 @@ static int convert_bits_to_bytes( const uint8_t* bits,
         if( shift > 7 ){
             bytes_pos++;
             shift = 0;
+            as_bytes[bytes_pos] = 0;
         }
     }
 
