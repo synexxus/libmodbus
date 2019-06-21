@@ -99,7 +99,7 @@ static int convert_bytes_to_registers(const uint8_t *bytes, int bytes_len, uint1
     return dest_pos;
 }
 
-static int convert_bytes_to_bits(const uint8_t *bits,
+static int modbus_pack_bits(const uint8_t *bits,
                               int bits_len,
                               uint8_t *rsp)
 {
@@ -126,27 +126,24 @@ static int convert_bytes_to_bits(const uint8_t *bits,
     return offset;
 }
 
-static int convert_bits_to_bytes( const uint8_t* bits,
-                                  int bits_len,
-                                  uint8_t* as_bytes){
+static int modbus_unpack_bits(const uint8_t *data, int num_bits, uint8_t *unpacked){
     int shift = 0;
+    int i;
+    int unpacked_pos = 0;
+    int data_pos = 0;
     int val;
-    int pos;
-    int bytes_pos = 0;
 
-    as_bytes[0] = 0;
-    for( pos = 0; pos < bits_len; pos++ ){
-        val = bits[pos] << shift;
-        as_bytes[bytes_pos] |= val;
+    for (i = 0; i < num_bits; i++){
+        val = data[data_pos] & (0x01 << shift);
+        unpacked[unpacked_pos++] = !!val;
         shift++;
-        if( shift > 7 ){
-            bytes_pos++;
+        if( shift == 8 ){
+            data_pos++;
             shift = 0;
-            as_bytes[bytes_pos] = 0;
         }
     }
 
-    return bytes_pos;
+    return num_bits;
 }
 
 static int has_function_callback(modbus_t *ctx,
@@ -203,7 +200,7 @@ static int do_function_callback(modbus_t *ctx, int slave, int function,
             ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
             goto bad_stat;
         }
-        ret = convert_bits_to_bytes( output_data_u8, ret, rsp + 1 );
+        ret = modbus_pack_bits( output_data_u8, ret, rsp + 1 );
         rsp[0] = ret;
         ret += 1;
         break;
@@ -221,8 +218,24 @@ static int do_function_callback(modbus_t *ctx, int slave, int function,
         break;
     case MODBUS_FC_WRITE_SINGLE_COIL:
         {
-            int bytes_len = convert_bytes_to_bits(req, nb, output_data_u8);
-            ret = ctx->function_callbacks.write_coil(ctx->reply_user_ctx, slave, address, bytes_len, output_data_u8 );
+            uint8_t value[1];
+            /* 
+             * note: nb contains the value(either 0xFF00 or 0x0000)
+             * Check to make sure the value is okay before acting on it
+             */
+            if( nb == 0xFF00 ){
+                value[0] = 1;
+            }else if( nb == 0x0000 ){
+                value[0] = 0;
+            }else{
+                ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
+                goto bad_stat;
+            }
+            
+            ret = ctx->function_callbacks.write_coil(ctx->reply_user_ctx, slave, address, 1, value );
+            if( ret < 0 ) goto bad_stat;
+            memcpy( rsp, req, req_len );
+            ret = 4;
         }
         break;
     case MODBUS_FC_WRITE_SINGLE_REGISTER:
@@ -237,7 +250,7 @@ static int do_function_callback(modbus_t *ctx, int slave, int function,
             ret = -MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE;
             goto bad_stat;
         }
-        ret = convert_bits_to_bytes( output_data_u8, ret, rsp + 1 );
+        ret = modbus_pack_bits( output_data_u8, ret, rsp + 1 );
         rsp[0] = ret;
         ret += 1;
         break;
