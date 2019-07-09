@@ -1892,7 +1892,6 @@ AARON
                     return;
                 }
                 *step = _STEP_DATA;
-                break;
             case _STEP_DATA:
                 *step = _STEP_DONE;
             default:
