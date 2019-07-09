@@ -57,10 +57,14 @@ static int response_exception(modbus_t *ctx, sft_t *sft,
     /* Print debug message */
     {
         char buffer[ 256 ];
+        int function_code = sft->function;
+        if( function_code < 0 || function_code > MODBUS_FC_WRITE_AND_READ_REGISTERS ){
+            function_code = MODBUS_FC_WRITE_AND_READ_REGISTERS + 1;
+        }
 
         snprintf( buffer, 256, "Sending exception %s to function code %s (0x%x)",
             exceptions[exception_code],
-            names[sft->function],
+            names[function_code],
             sft->function);
         LOG_DEBUG( "modbus", buffer);
     }
