@@ -1892,6 +1892,7 @@ AARON
                     return;
                 }
                 *step = _STEP_DATA;
+                if( *length_to_read != 0 ) break;
             case _STEP_DATA:
                 *step = _STEP_DONE;
             default:
