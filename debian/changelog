@@ -1,3 +1,9 @@
+libsynmodbus (3.2.7) UNRELEASED; urgency=medium
+
+  * Bumped version for release
+
+ -- Robert Middleton <rmiddleton@synexxus.com>  Fri, 12 Jul 2019 14:55:23 -0400
+
 libsynmodbus (3.2.6) unstable; urgency=medium
 
   * Bumped version for release
