@@ -1817,8 +1817,11 @@ static void modbus_process_data(modbus_t *ctx, enum ProcessingType type){
             modbus_timer_has_expired(ctx) ){
             /* Before we read data, ensure that our timer from an old request hasn't
              * expired.  If it has, reset our offset location.
+             * Also assume that the bytes we are processing right now are the 
+             * beginning of the next message(function code).
              */
             *data_offset = 0;
+            *step = _STEP_FUNCTION;
             LOG_DEBUG( "modbus", "Request from master timed out(incomplete message?)" );
         }
 
