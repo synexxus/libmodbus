@@ -1811,11 +1811,6 @@ static void modbus_process_data(modbus_t *ctx, enum ProcessingType type){
     step = &(ctx->async_data.parse_step);
     dest = ctx->async_data.data;
 
-    {
-        char buffer[128];
-        snprintf( buffer, 128, "Processing data.  Current step = %d", *step );
-        LOG_TRACE( "modbus", buffer );
-    }
     while( *step != _STEP_DONE ){ 
         if( type == PROCESSING_SLAVE &&
             *data_offset != 0 &&
